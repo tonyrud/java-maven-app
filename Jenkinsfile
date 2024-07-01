@@ -50,6 +50,27 @@ pipeline {
             }
         }
 
+        stage("provision server") {
+            environment {
+                AWS_ACCESS_KEY_ID = credentials('aws_access_key_id')
+                AWS_SECRET_ACCESS_KEY = credentials('aws_secret_access_key')
+                TF_VAR_env_prefix = 'test'
+            }
+            steps {
+                script {
+                    dir('terraform') {
+                        sh "terraform init"
+                        sh "terraform apply --auto-approve"
+                        EC2_PUBLIC_IP = sh(
+                        script: "terraform output ec2-public_ip",
+                        returnStdout: true
+                        ).trim()
+                    }
+                }
+            }
+        }
+
+
         // stage("deploy with Docker on EC2") {
         //     steps {
         //         script {
@@ -62,40 +83,50 @@ pipeline {
         //     }
         // }
 
-        // stage("deploy with Docker Compose on EC2") {
-        //     steps {
-        //         script {
-        //             echo 'deploying docker image to EC2...'
+        stage("deploy with Docker Compose on EC2") {
+            environment {
+                DOCKER_CREDS = credentials('docker-hub-repo')
+            }
 
-        //             def shellCmd = "bash ./server-cmds.sh ${IMAGE_VERSION}"
-        //             def ec2Instance = "ec2-user@3.145.156.253"
+            steps {
+                script {
+                            echo "waiting for EC2 server to initialize"
+                            sleep(time: 90, unit: "SECONDS")
 
-        //             sshagent(['ec2-server-key']) {
-        //                 sh "scp server-cmds.sh ${ec2Instance}:/home/ec2-user"
-        //                 sh "scp docker_compose.yml ${ec2Instance}:/home/ec2-user"
-        //                 sh "ssh -o StrictHostKeyChecking=no ${ec2Instance} ${shellCmd}"
+                            echo 'deploying docker image to EC2...'
+                            echo "${EC2_PUBLIC_IP}"
 
-        //             }
-        //         }
-        //     }
-        // }
+
+                            def shellCmd = "bash ./server-cmds.sh ${IMAGE_NAME} ${DOCKER_CREDS_USR} ${DOCKER_CREDS_PSW}"
+                            def ec2Instance = "ec2-user@${EC2_PUBLIC_IP}"
+
+                            sshagent(['jenkins-ssh']) {
+                                // copy files from repo to ec2 instance
+                                sh "scp -o StrictHostKeyChecking=no server-cmds.sh ${ec2Instance}:/home/ec2-user"
+                                sh "scp -o StrictHostKeyChecking=no docker_compose.yml ${ec2Instance}:/home/ec2-user"
+                                // ssh into ec2 instance and run commands
+                                sh "ssh -o StrictHostKeyChecking=no ${ec2Instance} ${shellCmd}"
+                            }
+                }
+            }
+        }
 
         // with Kubernetes
 
-        stage('k8s deploy') {
-            environment {
-                AWS_ACCESS_KEY_ID = credentials('aws_access_key_id')
-                AWS_SECRET_ACCESS_KEY = credentials('aws_secret_access_key')
-                APP_NAME = 'java-maven-app'
-                // KUBECONFIG = credentials('kubeconfig')
-            }
-            steps {
-                echo 'kubectl deployment...'
-                sh 'envsubst < kubernetes/deployment.yaml | kubectl apply -f -'
-                sh 'envsubst < kubernetes/service.yaml | kubectl apply -f -'
+        // stage('k8s deploy') {
+        //     environment {
+        //         AWS_ACCESS_KEY_ID = credentials('aws_access_key_id')
+        //         AWS_SECRET_ACCESS_KEY = credentials('aws_secret_access_key')
+        //         APP_NAME = 'java-maven-app'
+        //         // KUBECONFIG = credentials('kubeconfig')
+        //     }
+        //     steps {
+        //         echo 'kubectl deployment...'
+        //         sh 'envsubst < kubernetes/deployment.yaml | kubectl apply -f -'
+        //         sh 'envsubst < kubernetes/service.yaml | kubectl apply -f -'
 
-            }
-        }
+        //     }
+        // }
 
         stage('commit version update'){
             steps {
